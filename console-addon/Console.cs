@@ -1,5 +1,6 @@
 ﻿using Godot;
 using Godot.Collections;
+using Microsoft.VisualBasic;
 using System;
 using System.IO;
 using System.Linq;
@@ -16,76 +17,89 @@ using System.Linq;
 /// - ...
 /// 
 /// TODO:
-/// - Add runtime key binding that isn't saved ála SourceEngine
-/// - Take camera Zoom into account
-/// - Spectate: add possibility for smoothing between active camera changes?
+/// - Warn about command overwrites
+/// - Add runtime key binding ála SourceEngine
+/// - Spectate: add smoothing between active camera change
 ///   This could be perhaps accomplished by creating a Camera just for spectating
-/// - Add suffix to groups to avoid problems with conflicting groups, e.g. _{some_randomly_generated_value}
-/// - Convert GetNodes to use groups instead
+/// - Convert GetNodes to use groups instead,
+/// NOTE: When using group to tag single nodes, add suffix to avoid problems with conflicting groups, e.g. _{some_randomly_generated_value}
 /// - Add autocompletion suggestions
 /// - 2D freecam spectate
 /// - 3D freecam spectate
-/// - ...
+/// - Purge all BBCode and reimplement color styling in a sane way
 /// </summary>
 /// 
-public partial class Console : Node
+public partial class Console : CanvasLayer
 {
+    private class BBEmphasis
+    {
+        // Helpers for styling Console messages
+        public static string Warning(string message)
+        {
+            return "[color=yellow]" + message + "[/color]";
+        }
+
+        public static string Error(string message)
+        {
+            return "[color=red]" + message + "[/color]";
+        }
+    }
+
+    //private static Font consoleFont = ResourceLoader.Load<Font>("./LUCON.TTF");
+
     const string TOGGLE_ACTION          = "ToggleConsole";
+    const string SEND_LINE_ACTION       = "SendLine";
     const string SPECTATE_LEFT_ACTION   = "SpectateLeft";
     const string SPECTATE_RIGHT_ACTION  = "SpectateRight";
 
-    public const string CONSOLE_HOST_GROUP  = "ConsoleHost";
     public const string SPECTATE_GROUP      = "CanSpectate";
 
     private static bool        _isSpectating = false;
     private static Array<Node> _spectateList;
     private static int         _activeSpectateIdx;
 
-    private static CanvasLayer _instance;
-    public  static CanvasLayer Instance
-    {
-        get 
-        {
-            if (!IsInstanceValid(_instance)) _reinstantiateConsoleLayer.Call();
-            return _instance; 
-        }
-        set { _instance = value; }
-    }
-
-    public static Vector2 WindowSize = new();
-
-    private static SceneTree _tree = null;
-
-    private static Callable _reinstantiateConsoleLayer = Callable.From(() =>
-    {
-        Instance = BuildConsole(WindowSize);
-
-        // ISSUE #001 Problem with using name
-        //_tree.Root.GetNode(CONSOLE_HOST_GROUP).AddChild(Instance);
-        // WORKAROUND
-        _tree.GetNodesInGroup(CONSOLE_HOST_GROUP)[0].AddChild(Instance);
-        //
-
-    });
+    public static Console Instance;
 
     private static readonly Dictionary _commands = new();
+    private static readonly Dictionary _cmdHelpDescriptions = new();
+    private static Dictionary _sceneIndex = new(); // populates scenes with IDs for easy loads (not having to write out full path to load)
 
 
     public override void _Ready()
     {
-        // ISSUE #001 Problem with using name
-        //Name = CONSOLE_HOST_GROUP";
-        // WORKAROUND
-        AddToGroup(CONSOLE_HOST_GROUP);
-        //
+        Instance = this;
 
-        _tree       = GetTree();
-        WindowSize  = GetViewport().GetVisibleRect().Size;
+        BuildConsole();
+
+        _sceneIndex = IndexScenes();
 
         /* General game agnostic commands */
-        // Assumes every spectatable object is in group defined in SPECTATE_GROUP
-        // and has a single camera2D.
-        AddCommand("spectate",     Callable.From((string[] args) =>
+        AddCommand("help",          Callable.From((string[] args) =>
+        {
+            if (args.Length == 0)
+            {
+                foreach (var cmd in _commands) RunCommand("echo " + "[color=cyan]" + cmd.Key.ToString() + "[/color]");
+                RunCommand("echo Use 'help command' to look up information on a specific command");
+            }
+            else if (_cmdHelpDescriptions.TryGetValue(args[0].ToLower(), out Variant description))
+                RunCommand("echo " + description.AsString());
+            else
+                RunCommand("echo [info]: no help description available");
+        }));
+        AddCommand("quit",          Callable.From((string[] args) => { GetTree().Quit(); }));
+        AddCommand("echo",          Callable.From((string[] args) => {
+            // prints given arguments as-is
+            string output = "";
+            foreach (string str in args) output += str + " ";
+            RichTextLabel richTextLabel = new()
+            {
+                BbcodeEnabled = true,
+                CustomMinimumSize = new Vector2(Instance.GetViewport().GetVisibleRect().Size.X, 35),
+                Text = output
+            };
+            Instance.GetNode<VBoxContainer>("Panel/Scroll/VBox").AddChild(richTextLabel);
+        }));
+        AddCommand("spectate",      Callable.From((string[] args) =>
         {
             _spectateList = GetTree().GetNodesInGroup("CanSpectate");
 
@@ -114,54 +128,116 @@ public partial class Console : Node
                     }
                 }
             }
-        }));
-        AddCommand("max_fps",      Callable.From((string[] args) =>
+        }), "Spectate any Node in group defined in the defined SPECTATE_GROUP");
+        AddCommand("max_fps",       Callable.From((string[] args) =>
         {
             if (args.IsEmpty())
             {
-                PrintS("[color=yellow]Missing arguments:[/color] fps");
+                RunCommand("echo " + "[color=yellow]Missing arguments:[/color] fps");
                 return;
             }
 
             GD.Print(args[0].ToString());
 
             if (int.TryParse(args[0], out var result)) Engine.MaxFps = result;
-            else PrintS("[color=red]Error[/color] Invalid argument - expected a number");
+            else RunCommand("echo " + "[color=red]Error[/color] Invalid argument - expected a number");
         }));
-        AddCommand("clear",        Callable.From((string[] args) =>
+        AddCommand("clear",         Callable.From((string[] args) =>
         {
             foreach (var textLine in Instance.GetNode<VBoxContainer>("Panel/Scroll/VBox").GetChildren())
                 textLine.QueueFree();
         }));
-        AddCommand("scenes",       Callable.From((string[] args) =>
+        AddCommand("scenes",        Callable.From((string[] args) =>
         {
-            ListFilesInDirectory("res://", ".tscn", true);
-        }));
-        AddCommand("change_scene", Callable.From((string[] args) =>
+            foreach (int key in _sceneIndex.Keys)
+            {
+                if (!_sceneIndex.TryGetValue(key, out Variant filepath)) return;
+
+                RunCommand("echo [color=blue]Index: [/color]"+key+" | Filepath: "+filepath.AsString());
+            }
+        }), "Lists all scenes in the game's filesystem");
+        AddCommand("load_scene",    Callable.From((string[] args) =>
         {
             if (args.IsEmpty())
             {
-                PrintS("[color=yellow]Missing arguments:[/color] filepath_to_tscn");
+                RunCommand("echo " + "[color=yellow]Missing arguments:[/color] filepath_to_tscn OR sceneIndex");
                 return;
             }
 
-            if (!args[0].StartsWith("res:///"))
+            if (!int.TryParse(args[0], out int sceneIndex)) // If not Int, expect filepath to .tscn
             {
-                PrintS("[color=yellow]Warning:[/color] Make sure the filepath starts with res:/// (e.g. res:// is invalid due to an unknown Godot bug)");
-                return;
-            }
+                if (!args[0].StartsWith("res:///"))
+                {
+                    RunCommand("echo " + "[color=yellow]Warning:[/color] Make sure the filepath starts with res:/// (e.g. res:// is invalid due to an unknown Godot bug)");
+                    return;
+                }
 
-            if (Godot.FileAccess.FileExists(args[0]))
-            {
-                if (args[0].EndsWith(".tscn"))
-                    GetTree().ChangeSceneToFile(args[0]);
+                if (Godot.FileAccess.FileExists(args[0]))
+                {
+                    if (args[0].EndsWith(".tscn"))
+                        GetTree().ChangeSceneToFile(args[0]);
+                    else
+                        RunCommand("echo " + "[color=red]Error:[/color] invalid scene");
+                }
                 else
-                    PrintS("[color=red]Error:[/color] invalid scene");
+                    RunCommand("echo " + "[color=red]Error:[/color] Scene doesn't exist!");
+                return;
             }
             else
-                PrintS("[color=red]Error:[/color] Scene doesn't exist!");
+            {
+                Variant sceneFilepath;
+                if (!_sceneIndex.TryGetValue(sceneIndex, out sceneFilepath))
+                {
+                    RunCommand("echo " + BBEmphasis.Warning("Invalid sceneIndex - no match"));
+                    return;
+                }
+
+                if (Godot.FileAccess.FileExists(((string)sceneFilepath)))
+                    GetTree().ChangeSceneToFile((string)sceneFilepath);
+                else
+                    RunCommand("echo " + BBEmphasis.Error("Error:") + "Scene doesn't exist!");
+            }
+
+            
+        }), "Loads the scene, either by path or sceneIndex");
+        AddCommand("bind",          Callable.From((string[] args) =>
+        {
+            // Bind key to command(s).
+            // bind [KEY] [COMMAND]
+            // bind [KEY] "[COMMAND1];[COMMAND2];[COMMAND3];"
+
         }));
-        AddCommand("quit",         Callable.From((string[] args) => { GetTree().Quit(); }));
+        AddCommand("bind_action",   Callable.From((string[] args) =>
+        {
+            // Bind action to command(s).
+            // bind [KEY] [COMMAND]
+            // bind [KEY] "[COMMAND1];[COMMAND2];[COMMAND3];"
+
+        }));
+        AddCommand("freezoom",      Callable.From((string[] args) =>
+        {
+
+        }));
+        AddCommand("stepzoom",      Callable.From((string[] args) =>
+        {
+
+        }));
+        AddCommand("predict_fall",  Callable.From((string[] args) =>
+        {
+            if (!int.TryParse(args[0], out int truthValue))
+                return;
+
+            truthValue = Math.Clamp(truthValue, 0, 1);
+
+            if (truthValue == 1)
+            {
+                // calculate & visualise trajectories based on speed and direction
+            }
+            else
+            {
+                // disable
+            }
+        }));
     }
 
     public override void _Input(InputEvent @event)
@@ -215,12 +291,11 @@ public partial class Console : Node
             Instance.Visible = !Instance.Visible;
         }
 
-        if (@event.IsActionPressed("UI_SendMessage") && Instance.Visible)
+        if (@event.IsActionPressed(SEND_LINE_ACTION) && Instance.Visible)
         {
             TextEdit textEdit = Instance.GetNode<TextEdit>("Panel/TextEdit");
-            var command = textEdit.Text.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
-            if (command.Length > 0) RunCommand(command);
+            if (textEdit.Text.Length > 0) RunCommand(textEdit.Text);
 
             Callable.From(() =>
             {
@@ -237,12 +312,15 @@ public partial class Console : Node
         }
     }
 
+
     // You could define your own 'BuildConsole'
     // as long as it returns a CanvasLayer where your console resides
     // and follows the same node structure.
-    public static CanvasLayer BuildConsole(Vector2 windowSize)
+    private static void BuildConsole()
     {
-        // ConsoleLayer
+        var windowSize = Instance.GetViewport().GetVisibleRect().Size;
+
+        // root: Console
         //-------------------------
         //  Panel                  |
         //		 \__Scroll         |
@@ -251,18 +329,14 @@ public partial class Console : Node
         //		    \_TextEdit     |
         //-------------------------
 
-        CanvasLayer consoleLayer = new()
-        {
-            Name = "ConsoleLayer",
-            FollowViewportEnabled = false,
-            Layer = int.MaxValue,
-            Visible = false,
-        };
+        Instance.FollowViewportEnabled = false;
+        Instance.Layer = int.MaxValue;
+        Instance.Visible = false;
 
         Panel p = new()
         {
             Name = "Panel",
-            CustomMinimumSize = new Vector2(WindowSize.X, WindowSize.Y / 2)
+            CustomMinimumSize = new Vector2(Instance.GetViewport().GetVisibleRect().Size.X, Instance.GetViewport().GetVisibleRect().Size.Y / 2)
         };
 
         ScrollContainer sc = new()
@@ -271,13 +345,13 @@ public partial class Console : Node
         };
         sc.Position += new Vector2(20, 20);
         sc.SetAnchorsPreset(Control.LayoutPreset.TopLeft);
-        sc.CustomMinimumSize = new Vector2(WindowSize.X, WindowSize.Y / 2 - 30);
+        sc.CustomMinimumSize = new Vector2(Instance.GetViewport().GetVisibleRect().Size.X, Instance.GetViewport().GetVisibleRect().Size.Y / 2 - 30);
 
         VBoxContainer vbox = new()
         {
             Name = "VBox",
             Alignment = BoxContainer.AlignmentMode.End,
-            CustomMinimumSize = new Vector2(WindowSize.X, WindowSize.Y / 2 - 30)
+            CustomMinimumSize = new Vector2(Instance.GetViewport().GetVisibleRect().Size.X, Instance.GetViewport().GetVisibleRect().Size.Y / 2 - 30)
         };
         vbox.SetAnchorsPreset(Control.LayoutPreset.BottomLeft);
 
@@ -286,13 +360,14 @@ public partial class Console : Node
             Name = "TextEdit",
             CaretBlink = true,
             ScrollFitContentHeight = true,
-            PlaceholderText = "Type 'help' for a list of available commands"
+            PlaceholderText = "Type 'help' for a list of available commands",
         };
+
         te.SetAnchorsPreset(Control.LayoutPreset.BottomLeft);
-        te.CustomMinimumSize = new(WindowSize.X, 30);
+        te.CustomMinimumSize = new(Instance.GetViewport().GetVisibleRect().Size.X, 30);
         te.Connect(TextEdit.SignalName.TextChanged, Callable.From(() =>
         {
-            if (Input.IsActionPressed("UI_SendMessage"))
+            if (Input.IsActionPressed(SEND_LINE_ACTION))
             {
                 te.Text = "";
                 te.Clear();
@@ -304,55 +379,63 @@ public partial class Console : Node
         sc.AddChild(vbox);
         p.AddChild(sc);
         p.AddChild(te);
-        consoleLayer.AddChild(p);
-
-        return consoleLayer;
+        Instance.AddChild(p);
     }
 
-    public static Node GetActiveCamera(int getParentCount = 0)
+    private static Node GetActiveCamera()
     {
-        // TODO: add handling for Camera3Ds
-        var activeCam = Instance.GetViewport().GetCamera2D();
+        // returns null if there is no active camera
+        var activeCam2D = Instance.GetViewport().GetCamera2D();
+        var activeCam3D = Instance.GetViewport().GetCamera3D();
 
-        if (getParentCount == 0) return activeCam;
+        if (activeCam2D != null) return activeCam2D; // Active camera is a 2D camera
+        else if (activeCam3D != null) return activeCam3D; // Active camera is a 3D camera
 
-        Node parent = activeCam;
-        for (int i = 0; i < getParentCount; i++) parent = parent.GetParent();
-        return parent;
+        return null;
     }
 
-    public static void PrintS(params string[] strings)
+    private Dictionary IndexScenes()
     {
-        string output = "";
-        foreach (string str in strings) output += str + " ";
-        RichTextLabel richTextLabel = new()
+        Dictionary sceneIndex = new();
+
+        GetFilesInDirectory("res://", Callable.From((string filepath) =>
         {
-            BbcodeEnabled = true,
-            CustomMinimumSize = new Vector2(WindowSize.X, 35),
-            Text = output
-        };
-        Instance.GetNode<VBoxContainer>("Panel/Scroll/VBox").AddChild(richTextLabel);
+            sceneIndex.Add(sceneIndex.Count, filepath);
+        }), ".tscn", true);
+
+        return sceneIndex;
     }
 
-    public void ReinstateToActiveCamera() // TODO: Support Camera3D
+    private void ReinstateToActiveCamera()
     {
-        var activeCam = GetViewport().GetCamera2D();
-        if (activeCam != null)
+        var activeCam = GetActiveCamera();
+        if (activeCam != null && activeCam is Camera2D)
         {
-            //var consoleLayer = GetTree().Root.FindChild("ConsoleLayer") as CanvasLayer;
-            //consoleLayer.CustomViewport = activeCam;
+            CustomViewport = activeCam;
             // TODO: Verify that console persists correctly between camera changes
+        }
+
+        if (activeCam != null && activeCam is Camera3D)
+        {
+            CustomViewport = activeCam;
         }
     }
 
     // WARNING: string[] args must ALWAYS be present in Callable's parameters
     // Example: Callable.From((string[] args) => SomeFunction());
-    public static void AddCommand(string name, Callable callable)
+    public static void AddCommand(string name, Callable callable, string helpDescription="", params string[] aliases)
     {
         string nameLower = name.ToLower();
         if (_commands.TryGetValue(nameLower, out _))
             _commands.Remove(nameLower);
         _commands.Add(nameLower, callable);
+
+
+        if (_cmdHelpDescriptions.TryGetValue(nameLower, out _))
+            _cmdHelpDescriptions.Remove(nameLower);
+
+        if (helpDescription != "")
+            _cmdHelpDescriptions.Add(nameLower, helpDescription);
     }
 
     // WORKAROUND
@@ -364,25 +447,15 @@ public partial class Console : Node
         AddCommand(name, callable);
     }
 
-    public static void AddKeybind(string key, Callable callable, bool overridesExisting=false)
+    public void RunCommand(string command)
     {
+        var splitCommand = command.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
-    }
-
-    public void RunCommand(string[] command)
-    {
-        var key = command[0].ToLower();
-
-        if (key == "help")
-        {
-            foreach (var cmd in _commands)
-                PrintS("[color=cyan]" + cmd.Key.ToString() + "[/color]");
-            return;
-        }
+        var key = splitCommand[0].ToLower();
 
         if (!_commands.TryGetValue(key, out var result))
         {
-            PrintS("Invalid command");
+            RunCommand("echo Invalid command");
             return;
         }
 
@@ -391,14 +464,15 @@ public partial class Console : Node
         // Argument count might be zero, in which case error gets printed.
         //
         // Reimplement in the future if Godot adds possibility to check how many
-        // parameters a Callable takes, or adds callv (calling function with array of args).
-        string[] args = command.Skip(1).ToArray();
+        // parameters a Callable takes, or adds callv to C# (calling function with array of args).
+        string[] args = splitCommand.Skip(1).ToArray();
         result.AsCallable().Call(args);
 
         ReinstateToActiveCamera();
     }
 
-    private void ListFilesInDirectory(string path, string endsWith="", bool recursive=false)
+    // Callback signature: (string filepath) => {]
+    private void GetFilesInDirectory(string path, Callable callback, string endsWith="", bool recursive=false)
     {
         using var directory = DirAccess.Open(path);
 
@@ -411,13 +485,10 @@ public partial class Console : Node
 
             string filePath = path + "/" + file;
 
-            if (directory.CurrentIsDir() && recursive)
+            if (directory.CurrentIsDir() && recursive) GetFilesInDirectory(filePath, callback, endsWith, recursive);
+            else if (filePath.EndsWith(endsWith))
             {
-                ListFilesInDirectory(filePath, endsWith, recursive);
-            }
-            else if (filePath.EndsWith(".tscn"))
-            {
-                PrintS(filePath);
+                callback.Call(filePath);
             }
         }
 
