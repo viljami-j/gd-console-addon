@@ -13,5 +13,5 @@ An easy-to-use, simple in-game console inspired by the console used in Valve Sou
 - When adding console commands from GDScript, lambdas aren't currently supported - this might change in future versions of Godot.
 - Todo: add examples
 
-### Disclaimer
+#### Disclaimer
 This addon is being developed as per my own needs.
