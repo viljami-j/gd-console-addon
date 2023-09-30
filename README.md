@@ -2,14 +2,14 @@
 An easy-to-use, simple in-game console inspired by the console used in Valve Source 1.
 
 ## Features
+- Cross-language scripting: bind & call console commands from C# & GDSCript
 - Helpful game-agnostic commands
-- Call commands from anywhere (C#, GDScript) (todo: add examples)
 
 
 ## Upcoming features
 - Source-style autocompletion
 
-## Notes on Cross-scripting
+## Notes on Cross-language scripting
 - When adding console commands from GDScript, lambdas aren't currently supported - this might change in future versions of Godot.
 - Todo: add examples
 
