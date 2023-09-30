@@ -2,7 +2,7 @@
 An easy-to-use, simple in-game console inspired by the console used in Valve Source 1.
 
 ## Features
-- Cross-language scripting: bind & call console commands from C# & GDSCript
+- Cross-language scripting: bind & call console commands from C#, GDScript
 - Helpful game-agnostic commands
 
 
