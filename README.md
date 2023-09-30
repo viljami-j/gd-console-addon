@@ -1,6 +1,8 @@
 # godot-developer-console
 An easy-to-use, simple in-game console inspired by the console used in Valve Source 1.
 
+[Installation](godot_developer_console/installation.md)
+
 ## Features
 - Cross-language scripting: Add & call console commands from GDScript or C#
 - Helpful game-agnostic commands
