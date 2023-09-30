@@ -3,6 +3,8 @@ An easy-to-use, simple in-game console inspired by the console used in Valve Sou
 
 [Installation](godot_developer_console/installation.md)
 
+***Documentation is a work-in-progress. Feel free to open an issue about it, I will then prioritize and deliver it ASAP! (= 1-2 days, or less)***
+
 ## Features
 - Cross-language scripting: Add & call console commands from GDScript or C#
 - Helpful game-agnostic commands
