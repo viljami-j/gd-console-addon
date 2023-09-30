@@ -2,6 +2,7 @@
 using Godot.Collections;
 using Microsoft.VisualBasic;
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 
@@ -16,7 +17,15 @@ using System.Linq;
 ///	  Change the system so, that it instead specifies a Node target, which can also be null - this kind of situation is easily handled and does not cause a crash.
 /// - ...
 /// 
+/// PRIORITY TODO:
+/// - Add helpers for parsing arguments. Currently a lot of similar code gets written.
+/// Helpers could include:
+///     * int 0-1 to bool mapper + arg validator
+///     * int validator
+///     * ...etc
+/// 
 /// TODO:
+/// - Make adding commands dependency-free using hasnode and .Call("target", "functionName", param1, param2, ...)
 /// - Warn about command overwrites
 /// - Add runtime key binding ála SourceEngine
 /// - Spectate: add smoothing between active camera change
@@ -29,6 +38,7 @@ using System.Linq;
 /// - Purge all BBCode and reimplement color styling in a sane way
 /// </summary>
 /// 
+
 public partial class Console : CanvasLayer
 {
     private class BBEmphasis
@@ -36,23 +46,24 @@ public partial class Console : CanvasLayer
         // Helpers for styling Console messages
         public static string Warning(string message)
         {
-            return "[color=yellow]" + message + "[/color]";
+            return $"[color=yellow]{message}[/color]";
         }
 
         public static string Error(string message)
         {
-            return "[color=red]" + message + "[/color]";
+            return $"[color=red]{message}[/color]";
         }
     }
 
-    //private static Font consoleFont = ResourceLoader.Load<Font>("./LUCON.TTF");
+    private static Font consoleFont;
 
     const string TOGGLE_ACTION          = "ToggleConsole";
     const string SEND_LINE_ACTION       = "SendLine";
     const string SPECTATE_LEFT_ACTION   = "SpectateLeft";
     const string SPECTATE_RIGHT_ACTION  = "SpectateRight";
 
-    public const string SPECTATE_GROUP      = "CanSpectate";
+    public const string CONSOLE_GROUP   = "gd-console";
+    public const string SPECTATE_GROUP  = "CanSpectate";
 
     private static bool        _isSpectating = false;
     private static Array<Node> _spectateList;
@@ -60,25 +71,40 @@ public partial class Console : CanvasLayer
 
     public static Console Instance;
 
-    private static readonly Dictionary _commands = new();
-    private static readonly Dictionary _cmdHelpDescriptions = new();
-    private static Dictionary _sceneIndex = new(); // populates scenes with IDs for easy loads (not having to write out full path to load)
-
+    private static readonly Dictionary _commands                = new();
+    private static readonly Dictionary _cmdHelpDescriptions     = new();
+    private static          Dictionary _sceneIndex              = new(); // populates scenes with IDs for easy loads (not having to write out full path to load)
+    private static readonly Dictionary _aliases                 = new(); // key: aliasToCommand (string), val: Callable
+    private static readonly Dictionary _commandToAliasRelations = new(); // key: commandName (string), val: aliases (string[])
 
     public override void _Ready()
     {
         Instance = this;
 
-        BuildConsole();
+        AddToGroup(CONSOLE_GROUP);
+
+        GetFilesInDirectory("res://", Callable.From((string filepath) =>
+        {
+            consoleFont = ResourceLoader.Load<FontFile>(filepath);
+        }), "lucon.ttf", true); // Load font
+
+        BuildUI();
 
         _sceneIndex = IndexScenes();
 
         /* General game agnostic commands */
+        AddCommand("fix_font", Callable.From((string[] args) =>
+        {
+            GetFilesInDirectory("res://", Callable.From((string filepath) =>
+            {
+                RunCommand("echo " + filepath);
+            }), "", true); // Load font
+        }));
         AddCommand("help",          Callable.From((string[] args) =>
         {
             if (args.Length == 0)
             {
-                foreach (var cmd in _commands) RunCommand("echo " + "[color=cyan]" + cmd.Key.ToString() + "[/color]");
+                foreach (var cmd in _commands) RunCommand($"echo [color=cyan]{cmd.Key.AsString()}[/color]");
                 RunCommand("echo Use 'help command' to look up information on a specific command");
             }
             else if (_cmdHelpDescriptions.TryGetValue(args[0].ToLower(), out Variant description))
@@ -86,7 +112,7 @@ public partial class Console : CanvasLayer
             else
                 RunCommand("echo [info]: no help description available");
         }));
-        AddCommand("quit",          Callable.From((string[] args) => { GetTree().Quit(); }));
+        AddCommand("quit",          Callable.From((string[] args) => { GetTree().Quit(); }), "", "exit");
         AddCommand("echo",          Callable.From((string[] args) => {
             // prints given arguments as-is
             string output = "";
@@ -99,6 +125,35 @@ public partial class Console : CanvasLayer
             };
             Instance.GetNode<VBoxContainer>("Panel/Scroll/VBox").AddChild(richTextLabel);
         }));
+        AddCommand("aliases",       Callable.From((string[] args) =>
+        {
+            // First argument: commandName
+            if (_commandToAliasRelations.TryGetValue(args[0], out Variant result))
+                foreach (string alias in result.AsStringArray()) RunCommand("echo " + alias);
+            else
+                RunCommand("echo No aliases exist for command '" + args[0] + "'");
+
+        }), "Lists all aliases of a given command (aliases are alternate names to commands)");
+        AddCommand("reload",        Callable.From((string[] args) => { GetTree().ReloadCurrentScene(); }), "Reloads current scene");
+        AddCommand("window_mode",    Callable.From((string[] args) =>
+        {
+            switch (args[0])
+            {
+                case "borderless":
+                    DisplayServer.WindowSetMode(DisplayServer.WindowMode.Fullscreen);
+                    break;
+                case "exclusive":
+                    DisplayServer.WindowSetMode(DisplayServer.WindowMode.ExclusiveFullscreen);
+                    break;
+                case "windowed":
+                    DisplayServer.WindowSetMode(DisplayServer.WindowMode.Windowed);
+                    break;
+                default:
+                    RunCommand($"echo [INFO]: Window mode '{args[0]}' does not exist - available window modes: " +
+                        $"borderless | exclusive | windowed");
+                    break;
+            }
+        }), "[INFO]: Sets windowmode, takes 1 of the following arguments: borderless | exclusive | windowed", "wm");
         AddCommand("spectate",      Callable.From((string[] args) =>
         {
             _spectateList = GetTree().GetNodesInGroup("CanSpectate");
@@ -133,14 +188,14 @@ public partial class Console : CanvasLayer
         {
             if (args.IsEmpty())
             {
-                RunCommand("echo " + "[color=yellow]Missing arguments:[/color] fps");
+                RunCommand("echo [color=yellow]Missing arguments:[/color] fps");
                 return;
             }
 
             GD.Print(args[0].ToString());
 
             if (int.TryParse(args[0], out var result)) Engine.MaxFps = result;
-            else RunCommand("echo " + "[color=red]Error[/color] Invalid argument - expected a number");
+            else RunCommand("echo [color=red]Error[/color] Invalid argument - expected a number");
         }));
         AddCommand("clear",         Callable.From((string[] args) =>
         {
@@ -153,9 +208,9 @@ public partial class Console : CanvasLayer
             {
                 if (!_sceneIndex.TryGetValue(key, out Variant filepath)) return;
 
-                RunCommand("echo [color=blue]Index: [/color]"+key+" | Filepath: "+filepath.AsString());
+                RunCommand($"echo [color=blue]Index: [/color]{key} | Filepath: {filepath.AsString()}");
             }
-        }), "Lists all scenes in the game's filesystem");
+        }), "Lists all scenes in the game's filesystem", "ls");
         AddCommand("load_scene",    Callable.From((string[] args) =>
         {
             if (args.IsEmpty())
@@ -177,10 +232,10 @@ public partial class Console : CanvasLayer
                     if (args[0].EndsWith(".tscn"))
                         GetTree().ChangeSceneToFile(args[0]);
                     else
-                        RunCommand("echo " + "[color=red]Error:[/color] invalid scene");
+                        RunCommand("echo [color=red]Error:[/color] invalid scene");
                 }
                 else
-                    RunCommand("echo " + "[color=red]Error:[/color] Scene doesn't exist!");
+                    RunCommand("echo [color=red]Error:[/color] Scene doesn't exist!");
                 return;
             }
             else
@@ -199,12 +254,12 @@ public partial class Console : CanvasLayer
             }
 
             
-        }), "Loads the scene, either by path or sceneIndex");
+        }), "Loads the scene, either by path or sceneIndex", "loads", "ld");
         AddCommand("bind",          Callable.From((string[] args) =>
         {
             // Bind key to command(s).
-            // bind [KEY] [COMMAND]
-            // bind [KEY] "[COMMAND1];[COMMAND2];[COMMAND3];"
+            // bind [KEY] [COMMAND] [ARGS]
+            // bind [KEY] "[COMMAND] [ARGS]" "[COMMAND] [ARGS]" ...
 
         }));
         AddCommand("bind_action",   Callable.From((string[] args) =>
@@ -222,22 +277,37 @@ public partial class Console : CanvasLayer
         {
 
         }));
-        AddCommand("predict_fall",  Callable.From((string[] args) =>
+        //AddCommand("predict_fall",  Callable.From((string[] args) =>
+        //{
+        //    if (!int.TryParse(args[0], out int truthValue))
+        //        return;
+
+        //    truthValue = Math.Clamp(truthValue, 0, 1);
+
+        //    if (truthValue == 1)
+        //    {
+        //        // calculate & visualise trajectories based on speed and direction
+        //    }
+        //    else
+        //    {
+        //        // disable
+        //    }
+        //}));
+        AddCommand("enable_sound",  Callable.From((string[] args) =>
         {
-            if (!int.TryParse(args[0], out int truthValue))
+            if (!int.TryParse(args[0], out int value))
+            {
+                Instance.RunCommand("echo Expected 1 argument (int), 0 or 1");
                 return;
-
-            truthValue = Math.Clamp(truthValue, 0, 1);
-
-            if (truthValue == 1)
-            {
-                // calculate & visualise trajectories based on speed and direction
             }
-            else
-            {
-                // disable
-            }
-        }));
+
+            int clamped = Math.Clamp(value, 0, 1);
+
+            bool truthValue = clamped >= 1 ? true : false;
+
+            var masterBus = AudioServer.GetBusIndex("Master");
+            AudioServer.SetBusMute(masterBus, !truthValue);
+        }), "", "snd");
     }
 
     public override void _Input(InputEvent @event)
@@ -313,10 +383,7 @@ public partial class Console : CanvasLayer
     }
 
 
-    // You could define your own 'BuildConsole'
-    // as long as it returns a CanvasLayer where your console resides
-    // and follows the same node structure.
-    private static void BuildConsole()
+    private static void BuildUI()
     {
         var windowSize = Instance.GetViewport().GetVisibleRect().Size;
 
@@ -380,6 +447,15 @@ public partial class Console : CanvasLayer
         p.AddChild(sc);
         p.AddChild(te);
         Instance.AddChild(p);
+
+        // Apply theming
+        if (consoleFont != null)
+        {
+            Theme theme = new Theme();
+            theme.DefaultFont = consoleFont;
+            theme.DefaultFontSize = 16;
+            p.Theme = theme;
+        }
     }
 
     private static Node GetActiveCamera()
@@ -409,16 +485,9 @@ public partial class Console : CanvasLayer
     private void ReinstateToActiveCamera()
     {
         var activeCam = GetActiveCamera();
-        if (activeCam != null && activeCam is Camera2D)
-        {
-            CustomViewport = activeCam;
-            // TODO: Verify that console persists correctly between camera changes
-        }
-
-        if (activeCam != null && activeCam is Camera3D)
-        {
-            CustomViewport = activeCam;
-        }
+        // TODO: Verify that console persists correctly between camera changes
+        if (activeCam != null && activeCam is Camera2D) CustomViewport = activeCam;
+        if (activeCam != null && activeCam is Camera3D) CustomViewport = activeCam;
     }
 
     // WARNING: string[] args must ALWAYS be present in Callable's parameters
@@ -436,15 +505,36 @@ public partial class Console : CanvasLayer
 
         if (helpDescription != "")
             _cmdHelpDescriptions.Add(nameLower, helpDescription);
+
+        foreach (string alias in aliases)
+        {
+            if (_aliases.TryGetValue(alias, out _))
+                _aliases.Remove(alias);
+            _aliases.Add(alias, callable);
+        }
+
+        foreach (string alias in aliases)
+        {
+            if (_commandToAliasRelations.TryGetValue(nameLower, out Variant result))
+            {
+                string[] cmdAliases = result.AsStringArray();
+                var list = cmdAliases.ToList();
+                list.Add(alias);
+                _commandToAliasRelations.Remove(nameLower);
+                _commandToAliasRelations.Add(nameLower, list.ToArray<string>());
+            }
+            else
+                _commandToAliasRelations.Add(nameLower, new string[] { alias });
+        }
     }
 
     // WORKAROUND
     // Couldn't find a way to call a static C# function from GDScript.
     // This was apparently functional in Godot 3.x, but doesn't seem
     // to be working on v4.0.1.stable.mono.official [cacf49999]
-    public void GDAddCommand(string name, Callable callable)
+    public void GDAddCommand(string name, Callable callable, string helpDescription)
     {
-        AddCommand(name, callable);
+        AddCommand(name, callable, helpDescription);
     }
 
     public void RunCommand(string command)
@@ -455,20 +545,38 @@ public partial class Console : CanvasLayer
 
         if (!_commands.TryGetValue(key, out var result))
         {
-            RunCommand("echo Invalid command");
-            return;
+            if (!_aliases.TryGetValue(key, out var aresult))
+            {
+                RunCommand($"echo Invalid command '{key}'");
+                return;
+            }
+            else
+            {
+                // OPEN A GODOT ISSUE?
+                // We do not know how many arguments this call takes.
+                // Argument count might be zero, in which case error gets printed.
+                //
+                // Reimplement in the future if Godot adds possibility to check how many
+                // parameters a Callable takes, or adds callv to C# (calling function with array of args).
+                string[] args = splitCommand.Skip(1).ToArray();
+                aresult.AsCallable().Call(args);
+
+                ReinstateToActiveCamera();
+            }
         }
+        else
+        {
+            // OPEN A GODOT ISSUE?
+            // We do not know how many arguments this call takes.
+            // Argument count might be zero, in which case error gets printed.
+            //
+            // Reimplement in the future if Godot adds possibility to check how many
+            // parameters a Callable takes, or adds callv to C# (calling function with array of args).
+            string[] args = splitCommand.Skip(1).ToArray();
+            result.AsCallable().Call(args);
 
-        // OPEN A GODOT ISSUE?
-        // We do not know how many arguments this call takes.
-        // Argument count might be zero, in which case error gets printed.
-        //
-        // Reimplement in the future if Godot adds possibility to check how many
-        // parameters a Callable takes, or adds callv to C# (calling function with array of args).
-        string[] args = splitCommand.Skip(1).ToArray();
-        result.AsCallable().Call(args);
-
-        ReinstateToActiveCamera();
+            ReinstateToActiveCamera();
+        }
     }
 
     // Callback signature: (string filepath) => {]
@@ -483,12 +591,12 @@ public partial class Console : CanvasLayer
             string file = directory.GetNext();
             if (file == "") break;
 
-            string filePath = path + "/" + file;
+            string filepath = path + "/" + file;
 
-            if (directory.CurrentIsDir() && recursive) GetFilesInDirectory(filePath, callback, endsWith, recursive);
-            else if (filePath.EndsWith(endsWith))
+            if (directory.CurrentIsDir() && recursive) GetFilesInDirectory(filepath, callback, endsWith, recursive);
+            else if (filepath.EndsWith(endsWith))
             {
-                callback.Call(filePath);
+                callback.Call(filepath);
             }
         }
 
