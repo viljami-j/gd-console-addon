@@ -6,10 +6,10 @@ An easy-to-use, simple in-game console inspired by the console used in Valve Sou
 - Helpful game-agnostic commands
 
 
-## Upcoming features
+### Upcoming
 - Source-style autocompletion
 
-## Notes on Cross-language scripting
+### Notes on Cross-language scripting
 - When adding console commands from GDScript, lambdas aren't currently supported - this might change in future versions of Godot.
 - Todo: add examples
 
