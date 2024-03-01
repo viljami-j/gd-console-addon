@@ -1,7 +1,7 @@
 # godot-developer-console
 An easy-to-use, simple in-game console inspired by the console used in Valve Source 1.
 
-[Installation](### Installation)
+[Installation](###-Installation)
 
 ***Documentation is a work-in-progress. Feel free to open an issue about it, I will then prioritize and deliver it ASAP! (= 1-2 days, or less)***
 
