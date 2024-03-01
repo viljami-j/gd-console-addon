@@ -3,12 +3,12 @@
 importer="font_data_dynamic"
 type="FontFile"
 uid="uid://qk7saixppy0m"
-path="res://.godot/imported/lucon.ttf-d23f66f9e0c563abcbe6901756cbce7f.fontdata"
+path="res://.godot/imported/lucon.ttf-872de83d58c5ce8e7172efcdd2e7e6c6.fontdata"
 
 [deps]
 
-source_file="res://addons/godot_developer_console/lucon.ttf"
-dest_files=["res://.godot/imported/lucon.ttf-d23f66f9e0c563abcbe6901756cbce7f.fontdata"]
+source_file="res://addons/godot-developer-console/lucon.ttf"
+dest_files=["res://.godot/imported/lucon.ttf-872de83d58c5ce8e7172efcdd2e7e6c6.fontdata"]
 
 [params]
 
