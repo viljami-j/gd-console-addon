@@ -1,3 +1,5 @@
+# WARNING: This project is no longer maintained! It has been deprecated in favour of Panku Console (https://github.com/Ark2000/PankuConsole)
+
 # godot-developer-console
 An easy-to-use, simple in-game console inspired by the console used in Valve Source 1.
 
